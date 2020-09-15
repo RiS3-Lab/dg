@@ -130,7 +130,8 @@ private:
 
     }
 
-    void printMemRegion(const LLVMMemoryRegion& R,
+    void printMemRegion(const llvm::Instruction *I,
+                        const LLVMMemoryRegion& R,
                         llvm::formatted_raw_ostream& os,
                         const char *prefix = nullptr,
                         bool nl = false) {
@@ -140,6 +141,37 @@ private:
 
         assert(R.pointer.value);
         printValue(R.pointer.value, os);
+
+        // TEST - RPW.
+        auto startByte = *R.pointer.offset;
+        auto endByte = *R.pointer.offset + *R.len - 1;
+        llvm::errs() << "[RPW-DEBUG] The function: " << I->getFunction()->getName() << " accesses memory at: "
+                        << R.pointer.value << " at byte range: " << " ["
+                        << startByte << ", " << endByte << "]\n";
+
+        const llvm::Function *fn = I->getFunction();
+        for (auto arg = fn->arg_begin(); arg != fn->arg_end(); ++arg) {
+            //if (auto* ci = llvm::dyn_cast<llvm::ConstantInt>(arg))
+            //    llvm::errs() << "[RPW-DEBUG] " << ci->getValue() << "\n";
+            llvm::errs() << "\t[RPW-DEBUG] Arguments: " << *arg << "\n";
+        }
+
+        // use-def chain.
+        // All values that a particular instruction uses.
+        /*for (const llvm::Use &U : I->operands()) {
+            llvm::Value *v = U.get();
+            llvm::errs() << "[RPW-DEBUG] " << *v << "\n";
+        }*/
+
+        // def-use chain.
+        // All the instructions that use a given function.
+        /*for (const llvm::User *U : fn->users()) {
+            if (const llvm::Instruction *inst = llvm::dyn_cast<llvm::Instruction>(U)) {
+                llvm::errs() << "[RPW-DEBUG] " << fn->getName() << " is used in instruction: " << *inst << "\n";
+            }
+        }*/
+
+        // END TEST - RPW.
 
         if (R.pointer.offset.isUnknown())
             os << " bytes [?";
@@ -256,6 +288,7 @@ private:
             }
         }
 
+        // Update here? - RPW.
         if (PTA && (opts & ANNOTATE_MEMORYACC)) {
             if (auto I = dyn_cast<Instruction>(node->getValue())) {
                 if (I->mayReadOrWriteMemory()) {
@@ -264,7 +297,7 @@ private:
                             os << "  ; unknown region\n";
                     }
                     for (const auto& mem : regions.second) {
-                        printMemRegion(mem, os, nullptr, true);
+                        printMemRegion(I, mem, os, nullptr, true);
                     }
                 }
             }
