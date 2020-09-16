@@ -160,7 +160,8 @@ private:
         // All values that a particular instruction uses.
         /*for (const llvm::Use &U : I->operands()) {
             llvm::Value *v = U.get();
-            llvm::errs() << "[RPW-DEBUG] " << *v << "\n";
+            //llvm::errs() << "[RPW-DEBUG] " << *v << "\n";
+            os << "\n  ; [RPW-USE-DEF] " << *v;
         }*/
 
         // def-use chain.
