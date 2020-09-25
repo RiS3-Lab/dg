@@ -166,11 +166,20 @@ private:
 
         // def-use chain.
         // All the instructions that use a given function.
+        // Test if we can get the parents of the instruction(s).
+        // Maybe this will give ID or field ID somehow.
+        // inst->getParent();
         /*for (const llvm::User *U : fn->users()) {
             if (const llvm::Instruction *inst = llvm::dyn_cast<llvm::Instruction>(U)) {
                 llvm::errs() << "[RPW-DEBUG] " << fn->getName() << " is used in instruction: " << *inst << "\n";
             }
         }*/
+
+        // Variable name test.
+        for (auto op = I.op_begin(); op != I.op_end(); op++) {
+            Value* v = op.get();
+            StringRef name = v->getName();
+        }
 
         // END TEST - RPW.
 
