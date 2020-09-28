@@ -30,6 +30,7 @@
 #include "dg/llvm/LLVMDependenceGraph.h"
 #include "dg/llvm/PointerAnalysis/PointerAnalysis.h"
 #include "dg/llvm/DataDependence/DataDependence.h"
+#include "llvm/IR/DebugInfoMetadata.h"
 
 namespace dg {
 namespace debug {
@@ -150,11 +151,11 @@ private:
                         << startByte << ", " << endByte << "]\n";
 
         const llvm::Function *fn = I->getFunction();
-        for (auto arg = fn->arg_begin(); arg != fn->arg_end(); ++arg) {
+        /*for (auto arg = fn->arg_begin(); arg != fn->arg_end(); ++arg) {
             //if (auto* ci = llvm::dyn_cast<llvm::ConstantInt>(arg))
             //    llvm::errs() << "[RPW-DEBUG] " << ci->getValue() << "\n";
             llvm::errs() << "\t[RPW-DEBUG] Arguments: " << *arg << "\n";
-        }
+        }*/
 
         // use-def chain.
         // All values that a particular instruction uses.
@@ -172,13 +173,26 @@ private:
         /*for (const llvm::User *U : fn->users()) {
             if (const llvm::Instruction *inst = llvm::dyn_cast<llvm::Instruction>(U)) {
                 llvm::errs() << "[RPW-DEBUG] " << fn->getName() << " is used in instruction: " << *inst << "\n";
+
+                // Another test...
+                //llvm::errs() << "[RPW-DEBUG] " << fn->getName() << " is used in instruction: " << *inst << " and has parent: " << *inst->getParent() << "\n";              
             }
         }*/
 
+        // Another time now.
+        if (llvm::DILocation *Loc = I->getDebugLoc()) {
+            unsigned line = Loc->getLine();
+            llvm::StringRef file = Loc->getFilename();
+            //llvm::StringRef dir = Loc->getDirectory();
+            //bool implicitCode = Loc->isImplicitCode();
+
+            llvm::errs() << "[RPW-DEBUG] Instruction metadata: " << line << " of: " << file << "\n";
+        }
+
         // Variable name test.
-        for (auto op = I.op_begin(); op != I.op_end(); op++) {
-            Value* v = op.get();
-            StringRef name = v->getName();
+        for (auto op = I->op_begin(); op != I->op_end(); op++) {
+            llvm::Value* v = op->get();
+            llvm::StringRef name = v->getName();
         }
 
         // END TEST - RPW.
