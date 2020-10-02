@@ -176,10 +176,10 @@ private:
         }*/
 
         // Variable name test.
-        for (auto op = I.op_begin(); op != I.op_end(); op++) {
+        /*for (auto op = I.op_begin(); op != I.op_end(); op++) {
             Value* v = op.get();
             StringRef name = v->getName();
-        }
+        }*/
 
         // END TEST - RPW.
 
