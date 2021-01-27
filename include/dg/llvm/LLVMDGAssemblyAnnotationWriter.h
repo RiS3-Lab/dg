@@ -190,10 +190,10 @@ private:
         }
 
         // Variable name test.
-        for (auto op = I->op_begin(); op != I->op_end(); op++) {
-            llvm::Value* v = op->get();
-            llvm::StringRef name = v->getName();
-        }
+        /*for (auto op = I.op_begin(); op != I.op_end(); op++) {
+            Value* v = op.get();
+            StringRef name = v->getName();
+        }*/
 
         // END TEST - RPW.
 
