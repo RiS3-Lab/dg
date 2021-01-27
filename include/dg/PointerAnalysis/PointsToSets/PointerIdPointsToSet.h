@@ -3,6 +3,7 @@
 
 #include "dg/PointerAnalysis/Pointer.h"
 #include "dg/ADT/Bitvector.h"
+#include "LookupTable.h"
 
 #include <map>
 #include <vector>
@@ -14,24 +15,31 @@ namespace pta {
 class PSNode;
 
 class PointerIdPointsToSet {
+    static PointerIDLookupTable lookupTable;
 
-    ADT::SparseBitvector pointers;
-    static std::map<Pointer, size_t> ids; //pointers are numbered 1, 2, ...
-    static std::vector<Pointer> idVector; //starts from 0 (pointer = idVector[id - 1])
+#if defined(HAVE_TSL_HOPSCOTCH) || (__clang__)
+    using PointersT = ADT::SparseBitvectorHashImpl;
+#else
+    using PointersT = ADT::SparseBitvector;
+#endif
+    PointersT pointers;
 
     //if the pointer doesn't have ID, it's assigned one
     size_t getPointerID(const Pointer& ptr) const {
-        auto it = ids.find(ptr);
-        if(it != ids.end()) {
-            return it->second;
-        }
-        idVector.push_back(ptr);
-        return ids.emplace_hint(it, ptr, ids.size() + 1)->second;
+        return lookupTable.getOrCreate(ptr);
+    }
+
+    const Pointer& getPointer(size_t id) const {
+        return lookupTable.get(id);
     }
 
     bool addWithUnknownOffset(PSNode* node) {
-        removeAny(node);
-        return !pointers.set(getPointerID({node, Offset::UNKNOWN}));
+        auto ptrid = getPointerID({node, Offset::UNKNOWN});
+        if (!pointers.get(ptrid)) {
+            removeAny(node);
+            return !pointers.set(ptrid);
+        }
+        return false; // we already had it
     }
 
 public:
@@ -73,17 +81,20 @@ public:
     }
 
     bool removeAny(PSNode *target) {
-        std::vector<size_t> toRemove;
+        decltype(pointers) tmp;
+        tmp.reserve(pointers.size());
+        bool removed = false;
         for (const auto& ptrID : pointers) {
-            if(idVector[ptrID - 1].target == target) {
-                toRemove.push_back(ptrID);
+            if (lookupTable.get(ptrID).target != target) {
+                tmp.set(ptrID);
+            } else {
+                removed = true;
             }
         }
 
-        for (auto ptrID : toRemove)  {
-            pointers.unset(ptrID);
-        }
-        return !toRemove.empty();
+        tmp.swap(pointers);
+
+        return removed;
     }
 
     void clear() {
@@ -105,8 +116,9 @@ public:
     }
 
     bool pointsToTarget(PSNode *target) const {
-        for(const auto& kv : ids) {
-            if(kv.first.target == target && pointers.get(kv.second)) {
+        for (auto ptrid : pointers) {
+            auto& ptr = getPointer(ptrid);
+            if (ptr.target == target) {
                 return true;
             }
         }
@@ -138,6 +150,17 @@ public:
 
     }
 
+    bool hasNullWithOffset() const {
+        for (auto ptrid : pointers) {
+            auto& ptr = getPointer(ptrid);
+            if (ptr.target == NULLPTR && *ptr.offset != 0) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     bool hasInvalidated() const {
         return pointsToTarget(INVALIDATED);
     }
@@ -152,9 +175,9 @@ public:
 
     class const_iterator {
 
-        typename ADT::SparseBitvector::const_iterator container_it;
+        typename PointersT::const_iterator container_it;
 
-        const_iterator(const ADT::SparseBitvector& pointers, bool end = false) :
+        const_iterator(const PointersT& pointers, bool end = false) :
         container_it(end ? pointers.end() : pointers.begin()) {}
 
     public:
@@ -170,7 +193,7 @@ public:
         }
 
         Pointer operator*() const {
-            return Pointer(idVector[*container_it - 1]);
+            return Pointer(lookupTable.get(*container_it));
         }
 
         bool operator==(const const_iterator& rhs) const {

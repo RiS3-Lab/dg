@@ -25,6 +25,7 @@ LLVMPointerAnalysis::getAccessedMemory(const llvm::Instruction *I) {
     using namespace llvm;
 
     LLVMPointsToSet PTSet;
+    LLVMPointsToSet PTSet2; // memmove and such use two ptsets
     LLVMMemoryRegionSet regions;
     Offset len;
 
@@ -37,6 +38,15 @@ LLVMPointerAnalysis::getAccessedMemory(const llvm::Instruction *I) {
     } else if (isa<LoadInst>(I)) {
         PTSet = getLLVMPointsTo(I->getOperand(0));
         len = llvmutils::getAllocatedSize(I->getType(), &DL);
+    } else if (isa<VAArgInst>(I)) {
+        PTSet = getLLVMPointsTo(I->getOperand(0));
+        len = Offset::UNKNOWN;
+    } else if (isa<AtomicCmpXchgInst>(I)) {
+        PTSet = getLLVMPointsTo(I->getOperand(0));
+        len = llvmutils::getAllocatedSize(I->getOperand(2)->getType(), &DL);
+    } else if (isa<AtomicRMWInst>(I)) {
+        PTSet = getLLVMPointsTo(I->getOperand(0));
+        len = llvmutils::getAllocatedSize(I->getOperand(1)->getType(), &DL);
     } else if (auto II = dyn_cast<IntrinsicInst>(I)) {
         switch(II->getIntrinsicID()) {
             // lifetime start/end do not access the memory,
@@ -46,6 +56,26 @@ LLVMPointerAnalysis::getAccessedMemory(const llvm::Instruction *I) {
             case Intrinsic::lifetime_end:
                 PTSet = getLLVMPointsTo(I->getOperand(1));
                 len = llvmutils::getConstantValue(II->getOperand(0));
+                break;
+            case Intrinsic::memset:
+                PTSet = getLLVMPointsTo(I->getOperand(0));
+                len = llvmutils::getConstantValue(II->getOperand(2));
+                break;
+            case Intrinsic::memmove:
+            case Intrinsic::memcpy:
+                PTSet = getLLVMPointsTo(I->getOperand(0));
+                PTSet2 = getLLVMPointsTo(I->getOperand(1));
+                len = llvmutils::getConstantValue(II->getOperand(2));
+                break;
+            case Intrinsic::vastart:
+            case Intrinsic::vaend:
+                PTSet = getLLVMPointsTo(I->getOperand(0));
+                len = Offset::UNKNOWN;
+                break;
+            case Intrinsic::vacopy:
+                PTSet = getLLVMPointsTo(I->getOperand(0));
+                PTSet2 = getLLVMPointsTo(I->getOperand(1));
+                len = Offset::UNKNOWN;
                 break;
             default:
                 llvm::errs() << "ERROR: Unhandled intrinsic\n"
@@ -61,10 +91,10 @@ LLVMPointerAnalysis::getAccessedMemory(const llvm::Instruction *I) {
         bool hasUnknown = false;
         for (unsigned i = 0; i < CI->getNumArgOperands(); ++i) {
             if (hasPointsTo(CI->getArgOperand(i))) {
-                auto tmp = getLLVMPointsTo(CI->getArgOperand(i));
-                hasUnknown |= tmp.hasUnknown();
+                auto tmp = getLLVMPointsToChecked(CI->getArgOperand(i));
+                hasUnknown |= tmp.first;
                 // translate to regions
-                for (const auto& ptr : tmp) {
+                for (const auto& ptr : tmp.second) {
                     regions.add(ptr.value, Offset::UNKNOWN, Offset::UNKNOWN);
                 }
             }
@@ -86,6 +116,9 @@ LLVMPointerAnalysis::getAccessedMemory(const llvm::Instruction *I) {
 
     // translate to regions
     for (const auto& ptr : PTSet) {
+        regions.add(ptr.value, ptr.offset, len);
+    }
+    for (const auto& ptr : PTSet2) {
         regions.add(ptr.value, ptr.offset, len);
     }
 

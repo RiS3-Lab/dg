@@ -7,57 +7,11 @@ namespace dg {
 namespace pta {
 
 class PSNoopRemover {
-    PointerGraph *PS;
+    PointerGraph *G;
 public:
-    PSNoopRemover(PointerGraph *PS) : PS(PS) {}
-
-    unsigned run() {
-        unsigned removed = 0;
-        for (const auto &nd : PS->getNodes()) {
-            if (!nd)
-                continue;
-
-            if (nd->getType() == PSNodeType::NOOP) {
-                nd->isolate();
-                // this should not break the iterator
-                PS->remove(nd.get());
-                ++removed;
-            }
-        }
-        return removed;
-    };
+    PSNoopRemover(PointerGraph *g) : G(g) {}
+    unsigned run();
 };
-
-static inline bool isStoreOfUnknown(PSNode *S, PSNode *to) {
-    return (S->getType() == PSNodeType::STORE &&
-            S->getOperand(1) == to &&
-            S->getOperand(0)->isUnknownMemory());
-}
-
-static inline bool usersImplyUnknown(PSNode *nd) {
-    for (PSNode *user : nd->getUsers()) {
-        // we store only unknown to this memory
-        if (!isStoreOfUnknown(user, nd) &&
-            user->getType() != PSNodeType::LOAD)
-            return false;
-    }
-
-    return true;
-}
-
-static inline bool allOperandsAreSame(PSNode *nd) {
-    auto opNum = nd->getOperandsNum();
-    if (opNum < 1)
-        return true;
-
-    PSNode *op0 = nd->getOperand(0);
-    for (decltype(opNum) i = 1; i < opNum; ++i) {
-        if (op0 != nd->getOperand(i))
-            return false;
-    }
-
-    return true;
-}
 
 // try to remove loads/stores that are provably
 // loads and stores of unknown memory
@@ -65,59 +19,15 @@ static inline bool allOperandsAreSame(PSNode *nd) {
 class PSUnknownsReducer {
     using MappingT = PointsToMapping<PSNode *>;
 
-    PointerGraph *PS;
+    PointerGraph *G;
     MappingT mapping;
 
     unsigned removed = 0;
 
-    void processAllocs() {
-        for (const auto& nd : PS->getNodes()) {
-            if (!nd)
-                continue;
-
-            if (nd->getType() == PSNodeType::ALLOC) {
-                // this is an allocation that has only stores of unknown memory to it
-                // (and its address is not stored anywhere) and there are only loads
-                // from this memory (that must result to unknown)
-                if (usersImplyUnknown(nd.get())) {
-                    for (PSNode *user : nd->getUsers()) {
-                        if (user->getType() == PSNodeType::LOAD) {
-                            // replace the uses of the load value by unknown
-                            // (this is what would happen in the analysis)
-                            user->replaceAllUsesWith(UNKNOWN_MEMORY);
-                            mapping.add(user, UNKNOWN_MEMORY);
-                        }
-                        // store can be removed directly
-                        user->isolate();
-                        PS->remove(user);
-                        ++removed;
-                    }
-
-                    // NOTE: keep the alloca, as it contains the
-                    // pointer to itself and may be queried for this pointer
-                }
-            } else if (nd->getType() == PSNodeType::PHI && nd->getOperandsNum() == 0) {
-                for (PSNode *user : nd->getUsers()) {
-                    // replace the uses of this value with unknown
-                    user->replaceAllUsesWith(UNKNOWN_MEMORY);
-                    mapping.add(user, UNKNOWN_MEMORY);
-
-                    // store can be removed directly
-                    user->isolate();
-                    PS->remove(user);
-                    ++removed;
-                }
-
-                nd->isolate();
-                PS->remove(nd.get());
-                assert(nd.get() == nullptr);
-                ++removed;
-            }
-        }
-    }
+    void processAllocs();
 
 public:
-    PSUnknownsReducer(PointerGraph *PS) : PS(PS) {}
+    PSUnknownsReducer(PointerGraph *g) : G(g) {}
 
     MappingT& getMapping() { return mapping; }
     const MappingT& getMapping() const { return mapping; }
@@ -132,8 +42,8 @@ class PSEquivalentNodesMerger {
 public:
     using MappingT = PointsToMapping<PSNode *>;
 
-    PSEquivalentNodesMerger(PointerGraph *S)
-    : PS(S), merged_nodes_num(0) {
+    PSEquivalentNodesMerger(PointerGraph *g)
+    : G(g), merged_nodes_num(0) {
         mapping.reserve(32);
     }
 
@@ -151,43 +61,14 @@ public:
 
 private:
     // get rid of all casts
-    void mergeCasts() {
-        for (const auto& nodeptr : PS->getNodes()) {
-            if (!nodeptr)
-                continue;
-
-            PSNode *node = nodeptr.get();
-
-            // cast is always 'a proxy' to the real value,
-            // it does not change the pointers
-            if (node->getType() == PSNodeType::CAST)
-                merge(node, node->getOperand(0));
-            else if (PSNodeGep *GEP = PSNodeGep::get(node)) {
-                if (GEP->getOffset().isZero()) // GEP with 0 offest is cast
-                    merge(node, GEP->getSource());
-            } else if (node->getType() == PSNodeType::PHI &&
-                        node->getOperandsNum() > 0 && allOperandsAreSame(node)) {
-                merge(node, node->getOperand(0));
-            }
-        }
-    }
+    void mergeCasts();
 
     // merge node1 and node2 (node2 will be
     // the representant and node1 will be removed,
     // mapping will be set to  node1 -> node2)
-    void merge(PSNode *node1, PSNode *node2) {
-        // remove node1
-        node1->replaceAllUsesWith(node2);
-        node1->isolate();
-        PS->remove(node1);
+    void merge(PSNode *node1, PSNode *node2);
 
-        // update the mapping
-        mapping.add(node1, node2);
-
-        ++merged_nodes_num;
-    }
-
-    PointerGraph *PS;
+    PointerGraph *G;
     // map nodes to its equivalent representant
     MappingT mapping;
 
@@ -197,20 +78,20 @@ private:
 class PointerGraphOptimizer {
     using MappingT = PointsToMapping<PSNode *>;
 
-    PointerGraph *PS;
+    PointerGraph *G;
     MappingT mapping;
 
     unsigned removed = 0;
 public:
-    PointerGraphOptimizer(PointerGraph *PS) : PS(PS) {}
+    PointerGraphOptimizer(PointerGraph *g) : G(g) {}
 
     void removeNoops() {
-        PSNoopRemover remover(PS);
+        PSNoopRemover remover(G);
         removed += remover.run();
     }
 
     void removeUnknowns() {
-        PSUnknownsReducer reducer(PS);
+        PSUnknownsReducer reducer(G);
         if (auto r = reducer.run()) {
             mapping.merge(std::move(reducer.getMapping()));
             removed += r;
@@ -218,7 +99,7 @@ public:
     }
 
     void removeEquivalentNodes() {
-        PSEquivalentNodesMerger merger(PS);
+        PSEquivalentNodesMerger merger(G);
         if (auto r = merger.run()) {
                 mapping.merge(std::move(merger.getMapping()));
                 removed += r;

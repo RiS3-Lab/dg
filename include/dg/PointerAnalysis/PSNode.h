@@ -114,8 +114,12 @@ inline const char *PSNodeTypeToCString(enum PSNodeType type)
 class PointerGraph;
 class PointerSubgraph;
 
-class PSNode : public SubgraphNode<PSNode>
-{
+class PSNode : public SubgraphNode<PSNode> {
+
+public:
+    using IDType = SubgraphNode<PSNode>::IDType;
+
+private:
     PSNodeType type;
 
     // in some cases some nodes are kind of paired - like formal and actual
@@ -131,7 +135,7 @@ class PSNode : public SubgraphNode<PSNode>
 
     unsigned int dfsid = 0;
 
-protected:
+public:
     ///
     // Construct a PSNode
     // \param t     type of the node
@@ -171,7 +175,6 @@ protected:
     //               when building it)
     // CALL_FUNCPTR: call via function pointer. The argument is the node that
     //               bears the pointers.
-    //               FIXME: use more nodes (null-terminated list of pointer nodes)
     // CALL_RETURN:  site where given call returns. Bears the pointers
     //               returned from the subprocedure. Works like PHI
     // RETURN:       represents returning value from a subprocedure,
@@ -181,7 +184,7 @@ protected:
     //               invalidates memory after returning from a function
     // FREE:         invalidates memory after calling free function on a pointer
 
-    PSNode(unsigned id, PSNodeType t)
+    PSNode(IDType id, PSNodeType t)
     : SubgraphNode<PSNode>(id), type(t) {
         switch(type) {
             case PSNodeType::ALLOC:
@@ -190,100 +193,16 @@ protected:
                 // (they points to the node where the memory was allocated)
                 addPointsTo(this, 0);
                 break;
-            case PSNodeType::CALL:
-                // the call without arguments
-                break;
             default:
                 break;
         }
     }
 
-    // ctor for memcpy
-    PSNode(unsigned id, PSNodeType t, PSNode *op1, PSNode *op2)
-    : PSNode(id, t)
-    {
-        assert(t == PSNodeType::MEMCPY);
-        addOperand(op1);
-        addOperand(op2);
-    }
-
-    // ctor for gep
-    PSNode(unsigned id, PSNodeType t, PSNode *op1)
-    : PSNode(id, t)
-    {
-        assert(t == PSNodeType::GEP);
-        addOperand(op1);
-    }
-
-    // ctor of constant
-    PSNode(unsigned id, PSNodeType t, PSNode *op, Offset offset)
-    : PSNode(id, t)
-    {
-        assert(t == PSNodeType::CONSTANT);
-        // this is to correctly track def-use chains
-        addOperand(op);
-        pointsTo.add(Pointer(op, offset));
-    }
-
-    PSNode(unsigned id, PSNodeType t, va_list args)
-    : PSNode(id, t) {
-        PSNode *op;
-
-        switch(type) {
-            case PSNodeType::NOOP:
-            case PSNodeType::ENTRY:
-            case PSNodeType::FUNCTION:
-            case PSNodeType::FORK:
-            case PSNodeType::JOIN:
-                // no operands (and FUNCTION has been set up
-                // in the super ctor)
-                break;
-            case PSNodeType::CAST:
-            case PSNodeType::LOAD:
-            case PSNodeType::CALL_FUNCPTR:
-            case PSNodeType::INVALIDATE_OBJECT:
-            case PSNodeType::INVALIDATE_LOCALS:
-            case PSNodeType::FREE:
-                addOperand(va_arg(args, PSNode *));
-                break;
-            case PSNodeType::STORE:
-                addOperand(va_arg(args, PSNode *));
-                addOperand(va_arg(args, PSNode *));
-                break;
-            case PSNodeType::CALL_RETURN:
-            case PSNodeType::PHI:
-            case PSNodeType::RETURN:
-            case PSNodeType::CALL:
-                op = va_arg(args, PSNode *);
-                // the operands are null terminated
-                while (op) {
-                    addOperand(op);
-                    op = va_arg(args, PSNode *);
-                }
-                break;
-            default:
-                assert(0 && "Unknown type");
-        }
-    }
-
-public:
-
-    PSNode(PSNodeType t)
-    : PSNode(0, t)
-    {
-        switch(t) {
-            case PSNodeType::INVALIDATED:
-                break;
-            case PSNodeType::NULL_ADDR:
-                break;
-            case PSNodeType::UNKNOWN_MEM:
-                // UNKNOWN_MEMLOC points to itself
-                break;
-            default:
-                // this constructor is for the above mentioned types only
-                assert(0 && "Invalid type");
-                abort();
-        }
+    // Unfortunately, constructors cannot use enums in templates
+    template<typename... Args>
+    PSNode(IDType id, PSNodeType type, Args&&... args)
+    : PSNode(id, type) {
+        addOperand(std::forward<Args>(args)...);
     }
 
     virtual ~PSNode() = default;
@@ -399,7 +318,7 @@ class PSNodeAlloc : public PSNode {
     bool is_temporary = false;
 
 public:
-    PSNodeAlloc(unsigned id, bool isTemp = false)
+    PSNodeAlloc(IDType id, bool isTemp = false)
     : PSNode(id, PSNodeType::ALLOC), is_temporary(isTemp) {
     }
 
@@ -426,7 +345,7 @@ public:
 
 #if 0
 class PSNodeTemporaryAlloc : public PSNodeAlloc {
-    PSNodeTemporaryAlloc(unsigned id)
+    PSNodeTemporaryAlloc(IDType id)
     : PSNodeAlloc(id, PSNodeType::ALLOC, /* isTemp */ true) {}
 
     static PSNodeTemporaryAlloc *get(PSNode *n) {
@@ -440,11 +359,33 @@ class PSNodeTemporaryAlloc : public PSNodeAlloc {
 };
 #endif
 
+class PSNodeConstant : public PSNode {
+    Offset offset;
+
+public:
+    PSNodeConstant(IDType id, PSNode *op, Offset offset)
+    : PSNode(id, PSNodeType::CONSTANT, op), offset(offset) {
+        addPointsTo(op, offset);
+    }
+
+    static PSNodeConstant *get(PSNode *n) {
+        return isa<PSNodeType::CONSTANT>(n) ? static_cast<PSNodeConstant *>(n)
+                                            : nullptr;
+    }
+
+    static PSNodeConstant *cast(PSNode *n) { return _cast<PSNodeConstant>(n); }
+
+    Pointer getPointer() const { return Pointer(getOperand(0), offset); }
+    Offset getOffset() const { return offset; }
+    PSNode *getTarget() { return getOperand(0); }
+    const PSNode *getTarget() const { return getOperand(0); }
+};
+
 class PSNodeMemcpy : public PSNode {
     Offset len;
 
 public:
-    PSNodeMemcpy(unsigned id, PSNode *src, PSNode *dest, Offset len)
+    PSNodeMemcpy(IDType id, PSNode *src, PSNode *dest, Offset len)
     :PSNode(id, PSNodeType::MEMCPY, src, dest), len(len) {}
 
     static PSNodeMemcpy *get(PSNode *n) {
@@ -462,7 +403,7 @@ class PSNodeGep : public PSNode {
     Offset offset;
 
 public:
-    PSNodeGep(unsigned id, PSNode *src, Offset o)
+    PSNodeGep(IDType id, PSNode *src, Offset o)
     :PSNode(id, PSNodeType::GEP, src), offset(o) {}
 
     static PSNodeGep *get(PSNode *n) {
@@ -483,7 +424,7 @@ class PSNodeEntry : public PSNode {
     std::vector<PSNode *> callers;
 
 public:
-    PSNodeEntry(unsigned id, const std::string& name = "not-known")
+    PSNodeEntry(IDType id, const std::string& name = "not-known")
     :PSNode(id, PSNodeType::ENTRY), functionName(name) {}
 
     static PSNodeEntry *get(PSNode *n) {
@@ -517,9 +458,11 @@ class PSNodeCall : public PSNode {
     PSNode *callReturn{nullptr};
 
 public:
-    PSNodeCall(PSNodeType t, unsigned id) :PSNode(id, t) {
-        assert(t == PSNodeType::CALL || t == PSNodeType::CALL_FUNCPTR);
-    }
+    PSNodeCall(IDType id)
+    :PSNode(id, PSNodeType::CALL) {}
+
+    PSNodeCall(IDType id, PSNode* op)
+    :PSNode(id, PSNodeType::CALL_FUNCPTR, op) {}
 
     static PSNodeCall *get(PSNode *n) {
         return (isa<PSNodeType::CALL>(n) || isa<PSNodeType::CALL_FUNCPTR>(n)) ?
@@ -573,8 +516,9 @@ class PSNodeCallRet : public PSNode {
     PSNode *call;
 
 public:
-    PSNodeCallRet(unsigned id, va_list args)
-    :PSNode(id, PSNodeType::CALL_RETURN, args) {}
+    template<typename... Args>
+    PSNodeCallRet(IDType id, Args&&... args)
+    :PSNode(id, PSNodeType::CALL_RETURN, std::forward<Args>(args)...) {}
 
     static PSNodeCallRet *get(PSNode *n) {
         return isa<PSNodeType::CALL_RETURN>(n) ?
@@ -623,8 +567,9 @@ class PSNodeRet : public PSNode {
     std::vector<PSNode *> returns;
 
 public:
-    PSNodeRet(unsigned id, va_list args)
-    :PSNode(id, PSNodeType::RETURN, args) {}
+    template<typename... Args>
+    PSNodeRet(IDType id, Args&&... args)
+    :PSNode(id, PSNodeType::RETURN, std::forward<Args>(args)...) {}
 
     static PSNodeRet *get(PSNode *n) {
         return isa<PSNodeType::RETURN>(n) ?
@@ -672,8 +617,8 @@ class PSNodeFork : public PSNode {
     std::set<PSNode *> functions_;
 
 public:
-    PSNodeFork(unsigned id)
-        :PSNode(id, PSNodeType::FORK) {}
+    PSNodeFork(IDType id, PSNode* from)
+        :PSNode(id, PSNodeType::FORK, from) {}
 
     static PSNodeFork *get(PSNode *n) {
         return isa<PSNodeType::FORK>(n) ?
@@ -707,7 +652,7 @@ class PSNodeJoin : public PSNode {
     std::set<PSNodeFork *> forks_;
     std::set<PSNode *> functions_;
 public:
-    PSNodeJoin(unsigned id)
+    PSNodeJoin(IDType id)
     :PSNode(id, PSNodeType::JOIN) {}
 
     static PSNodeJoin *get(PSNode *n) {
@@ -743,6 +688,76 @@ public:
 
     friend class PSNodeFork;
 };
+
+template<PSNodeType Type, typename = void>
+struct GetNodeType
+{
+    using type = PSNode;
+};
+
+template<>
+struct GetNodeType<PSNodeType::ALLOC>
+{
+    using type = PSNodeAlloc;
+};
+
+template<>
+struct GetNodeType<PSNodeType::CONSTANT>
+{
+    using type = PSNodeConstant;
+};
+
+template<>
+struct GetNodeType<PSNodeType::GEP>
+{
+    using type = PSNodeGep;
+};
+
+template<>
+struct GetNodeType<PSNodeType::MEMCPY>
+{
+    using type = PSNodeMemcpy;
+};
+
+
+template<>
+struct GetNodeType<PSNodeType::ENTRY>
+{
+    using type = PSNodeEntry;
+};
+
+template<PSNodeType Type>
+struct GetNodeType<Type,
+    typename std::enable_if<Type == PSNodeType::CALL || Type == PSNodeType::CALL_FUNCPTR>
+                           ::type>
+{
+    using type = PSNodeCall;
+};
+
+template<>
+struct GetNodeType<PSNodeType::FORK>
+{
+    using type = PSNodeFork;
+};
+
+template<>
+struct GetNodeType<PSNodeType::JOIN>
+{
+    using type = PSNodeJoin;
+};
+
+template<>
+struct GetNodeType<PSNodeType::RETURN>
+{
+    using type = PSNodeRet;
+};
+
+template<>
+struct GetNodeType<PSNodeType::CALL_RETURN>
+{
+    using type = PSNodeCallRet;
+};
+
 
 } // namespace pta
 } // namespace dg

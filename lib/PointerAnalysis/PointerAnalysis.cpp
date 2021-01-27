@@ -1,25 +1,11 @@
 #include "dg/PointerAnalysis/Pointer.h"
 #include "dg/PointerAnalysis/PointsToSet.h"
-#include "dg/PointerAnalysis/PointerGraph.h"
 #include "dg/PointerAnalysis/PointerAnalysis.h"
 
 #include "dg/util/debug.h"
 
 namespace dg {
 namespace pta {
-
-// nodes representing NULL, unknown memory
-// and invalidated memory
-PSNode NULLPTR_LOC(PSNodeType::NULL_ADDR);
-PSNode *NULLPTR = &NULLPTR_LOC;
-PSNode UNKNOWN_MEMLOC(PSNodeType::UNKNOWN_MEM);
-PSNode *UNKNOWN_MEMORY = &UNKNOWN_MEMLOC;
-PSNode INVALIDATED_LOC(PSNodeType::INVALIDATED);
-PSNode *INVALIDATED = &INVALIDATED_LOC;
-
-// pointers to those memory
-const Pointer UnknownPointer(UNKNOWN_MEMORY, Offset::UNKNOWN);
-const Pointer NullPointer(NULLPTR, 0);
 
 // Return true if it makes sense to dereference this pointer.
 // PTA is over-approximation, so this is a filter.
@@ -33,6 +19,20 @@ static inline bool canBeDereferenced(const Pointer& ptr)
         return false;
 
     return true;
+}
+
+static bool funHasAddressTaken(PSNode *node) {
+    if (node->getType() != PSNodeType::FUNCTION)
+        return false;
+
+    for (auto *user : node->getUsers()) {
+        if (node->getType() != PSNodeType::CALL ||
+                // call but is not called
+            node->getOperand(0) != user) {
+            return true;
+        }
+    }
+    return false;
 }
 
 bool PointerAnalysis::processLoad(PSNode *node)
@@ -179,21 +179,34 @@ bool PointerAnalysis::processMemcpy(PSNode *node)
     return changed;
 }
 
+static Pointer unwrapConstants(const Pointer& ptr) {
+    Offset offset = ptr.offset;
+    PSNode *target = ptr.target;
+    while (auto *C = PSNodeConstant::get(target)) {
+        target = C->getTarget();
+        offset += C->getOffset();
+    }
+    return Pointer(target, offset);
+}
+
 bool PointerAnalysis::processMemcpy(std::vector<MemoryObject *>& srcObjects,
                                     std::vector<MemoryObject *>& destObjects,
                                     const Pointer& sptr, const Pointer& dptr,
                                     Offset len)
 {
+    assert(len > 0 && "Memcpy of length 0");
+
     bool changed = false;
-    Offset srcOffset = sptr.offset;
-    Offset destOffset = dptr.offset;
 
-    assert(*len > 0 && "Memcpy of length 0");
+    Pointer tmp = unwrapConstants(sptr);
+    Offset srcOffset = tmp.offset;
+    PSNodeAlloc *sourceAlloc = PSNodeAlloc::get(tmp.target);
+    assert(sourceAlloc && "Source in memcpy is invalid");
 
-    PSNodeAlloc *sourceAlloc = PSNodeAlloc::get(sptr.target);
-    assert(sourceAlloc && "Pointer's target in memcpy is not an allocation");
-    PSNodeAlloc *destAlloc = PSNodeAlloc::get(dptr.target);
-    assert(destAlloc && "Pointer's target in memcpy is not an allocation");
+    tmp = unwrapConstants(dptr);
+    Offset destOffset = tmp.offset;
+    PSNodeAlloc *destAlloc = PSNodeAlloc::get(tmp.target);
+    assert(destAlloc && "Destination in memcpy is invalid");
 
     // set to true if the contents of destination memory
     // can contain null
@@ -373,7 +386,11 @@ bool PointerAnalysis::processNode(PSNode *node)
                 if (!options.invalidateNodes
                     && ptr.target->getType() != PSNodeType::FUNCTION)
                     continue;
-
+                // Functions that have not address taken cannot
+                // be called via a pointer
+                if (!funHasAddressTaken(ptr.target)) {
+                    continue;
+                }
                 if (node->addPointsTo(ptr)) {
                     changed = true;
 

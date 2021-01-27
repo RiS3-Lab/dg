@@ -97,10 +97,9 @@ bool LLVMPointerGraphBuilder::addFunctionToJoin(PSNode *function,
 
         DBG(pta, "Found a new join point for function '" << F->getName().str() << "'");
         if (!CInst->getOperand(1)->isNull()) {
-            PSNode *phi = PS.create(PSNodeType::PHI, nullptr);
-            PSNode *store = PS.create(PSNodeType::STORE, 
-                                      phi, 
-                                      CInst->getOperand(1));
+            PSNode *phi = PS.create<PSNodeType::PHI>();
+            PSNode *store = PS.create<PSNodeType::STORE>(phi,
+                                                         CInst->getOperand(1));
             phi->addSuccessor(store);
             store->addSuccessor(joinNode);
             for (PSNode *ret : subgraph->returnNodes) {
@@ -116,25 +115,25 @@ bool LLVMPointerGraphBuilder::addFunctionToJoin(PSNode *function,
     return true;
 }
 
-LLVMPointerGraphBuilder::PSNodesSeq&
+LLVMPointerGraphBuilder::PSNodesSeq
 LLVMPointerGraphBuilder::createPthreadCreate(const llvm::CallInst *CInst) {
-    PSNodeCall *callNode = PSNodeCall::get(PS.create(PSNodeType::CALL));
+    PSNodeCall *callNode = PSNodeCall::get(PS.create<PSNodeType::CALL>());
     PSNodeFork *forkNode = createForkNode(CInst, callNode);
 
     callNode->addSuccessor(forkNode);
 
     // do not add the fork node into the sequence,
     // it is going to branch from the call
-    return addNode(CInst, callNode);
+    return {callNode};
 }
 
-LLVMPointerGraphBuilder::PSNodesSeq&
+LLVMPointerGraphBuilder::PSNodesSeq
 LLVMPointerGraphBuilder::createPthreadJoin(const llvm::CallInst *CInst) {
-    PSNodeCall *callNode = PSNodeCall::get(PS.create(PSNodeType::CALL));
+    PSNodeCall *callNode = PSNodeCall::get(PS.create<PSNodeType::CALL>());
     PSNodeJoin *joinNode = createJoinNode(CInst, callNode);
 
     // FIXME: create only the join node, not call node and join node
-    return addNode(CInst, {callNode, joinNode});
+    return {callNode, joinNode};
 }
 
 PSNodeFork *
@@ -142,8 +141,8 @@ LLVMPointerGraphBuilder::createForkNode(const llvm::CallInst *CInst,
                                         PSNode *callNode) {
 
     using namespace llvm;
-    PSNodeFork *forkNode = PSNodeFork::get(PS.create(PSNodeType::FORK,
-                                                     getOperand(CInst->getArgOperand(2))));
+    PSNodeFork *forkNode = PSNodeFork::get(
+            PS.create<PSNodeType::FORK>(getOperand(CInst->getArgOperand(2))));
     callNode->setPairedNode(forkNode);
     forkNode->setPairedNode(callNode);
 
@@ -165,7 +164,7 @@ LLVMPointerGraphBuilder::createJoinNode(const llvm::CallInst *CInst,
                                         PSNode *callNode) {
     using namespace llvm;
 
-    PSNodeJoin *joinNode = PSNodeJoin::get(PS.create(PSNodeType::JOIN));
+    PSNodeJoin *joinNode = PSNodeJoin::get(PS.create<PSNodeType::JOIN>());
     callNode->setPairedNode(joinNode);
     joinNode->setPairedNode(callNode);
 
@@ -177,21 +176,21 @@ LLVMPointerGraphBuilder::createJoinNode(const llvm::CallInst *CInst,
     return joinNode;
 }
 
-LLVMPointerGraphBuilder::PSNodesSeq&
+LLVMPointerGraphBuilder::PSNodesSeq
 LLVMPointerGraphBuilder::createPthreadExit(const llvm::CallInst *CInst) {
     using namespace llvm;
 
-    PSNodeCall *callNode = PSNodeCall::get(PS.create(PSNodeType::CALL));
+    PSNodeCall *callNode = PSNodeCall::get(PS.create<PSNodeType::CALL>());
     addArgumentOperands(*CInst, *callNode);
     auto pthread_exit_operand = callNode->getOperand(0);
-    PSNodeRet *returnNode
-        = PSNodeRet::get(PS.create(PSNodeType::RETURN,
-                                   pthread_exit_operand, nullptr));
+
+    PSNodeRet *returnNode = PSNodeRet::get(
+            PS.create<PSNodeType::RETURN>(pthread_exit_operand));
     callNode->setPairedNode(returnNode);
     returnNode->setPairedNode(callNode);
     callNode->addSuccessor(returnNode);
 
-    return addNode(CInst, {callNode, returnNode});
+    return {callNode, returnNode};
 }
 
 bool LLVMPointerGraphBuilder::matchJoinToRightCreate(PSNode *joinNode) {

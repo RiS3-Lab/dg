@@ -16,6 +16,8 @@ extern PSNode *INVALIDATED;
 
 struct Pointer
 {
+    Pointer() : target(nullptr) {}
+
     Pointer(PSNode *n, Offset off) : target(n), offset(off)
     {
         assert(n && "Cannot have a pointer with nullptr as target");
@@ -41,6 +43,8 @@ struct Pointer
     bool isValid() const { return !isNull() && !isUnknown(); }
     bool isInvalidated() const { return target == INVALIDATED; }
 
+    size_t hash() const;
+
 #ifndef NDEBUG
     void dump() const;
     void print() const;
@@ -54,5 +58,13 @@ extern const Pointer NullPointer;
 
 } // namespace pta
 } // namespace dg
+
+namespace std{
+template<> struct hash<dg::pta::Pointer> {
+    size_t operator() (const dg::pta::Pointer& p) const {
+        return p.hash();
+    }
+};
+}
 
 #endif

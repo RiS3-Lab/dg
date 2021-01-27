@@ -107,10 +107,14 @@ public:
 
     RWNode *createStore(const llvm::Instruction *Inst);
     RWNode *createLoad(const llvm::Instruction *Inst);
+    RWNode *createAtomicRMW(const llvm::Instruction *Inst);
     RWNode *createAlloc(const llvm::Instruction *Inst);
     RWNode *createDynAlloc(const llvm::Instruction *Inst, AllocationFunction type);
     RWNode *createRealloc(const llvm::Instruction *Inst);
     RWNode *createReturn(const llvm::Instruction *Inst);
+
+    void addReallocUses(const llvm::Instruction *Inst,
+                        RWNode& node, uint64_t size);
 
     RWNode *funcFromModel(const FunctionModel *model, const llvm::CallInst *);
 

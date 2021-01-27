@@ -22,8 +22,8 @@
 #pragma GCC diagnostic pop
 #endif
 
-#include "llvm-slicer.h"
-#include "llvm-slicer-utils.h"
+#include "dg/tools/llvm-slicer.h"
+#include "dg/tools/llvm-slicer-utils.h"
 
 #include "git-version.h"
 
@@ -80,7 +80,14 @@ SlicerOptions parseSlicerOptions(int argc, char *argv[], bool requireCrit, bool 
         inputFile.setNumOccurrencesFlag(llvm::cl::Required);
     }
 
-    llvm::cl::opt<std::string> slicingCriteria("c",
+    llvm::cl::opt<std::string> slicingCriteria("sc",
+        llvm::cl::desc("Slicing criterion\n"
+                       "S ::= file1,file2#line1,line2#[var1,fun1],[var2,fun2]\n"
+                       "S[&S];S[&S]\n"),
+                       llvm::cl::value_desc("crit"),
+                       llvm::cl::init(""), llvm::cl::cat(SlicingOpts));
+
+    llvm::cl::opt<std::string> legacySlicingCriteria("c",
         llvm::cl::desc("Slice with respect to the call-sites of a given function\n"
                        "i. e.: '-c foo' or '-c __assert_fail'. Special value is a 'ret'\n"
                        "in which case the slice is taken with respect to the return value\n"
@@ -91,11 +98,8 @@ SlicerOptions parseSlicerOptions(int argc, char *argv[], bool requireCrit, bool 
                        "You can use comma-separated list of more slicing criteria,\n"
                        "e.g. -c foo,5:x,:glob\n"), llvm::cl::value_desc("crit"),
                        llvm::cl::init(""), llvm::cl::cat(SlicingOpts));
-    if (requireCrit) {
-        slicingCriteria.setNumOccurrencesFlag(llvm::cl::Required);
-    }
 
-    llvm::cl::opt<std::string> secondarySlicingCriteria("2c",
+    llvm::cl::opt<std::string> legacySecondarySlicingCriteria("2c",
         llvm::cl::desc("Set secondary slicing criterion. The criterion is a call\n"
                        "to a given function. If just a name of the function is\n"
                        "given, it is a 'control' slicing criterion. If there is ()\n"
@@ -125,6 +129,12 @@ SlicerOptions parseSlicerOptions(int argc, char *argv[], bool requireCrit, bool 
     llvm::cl::opt<bool> cdaPerInstr("cda-per-inst",
         llvm::cl::desc("Compute control dependencies per instruction (the default\n"
                        "is per basic block)\n"),
+                       llvm::cl::init(false), llvm::cl::cat(SlicingOpts));
+
+    llvm::cl::opt<bool> icfgCD("cda-icfg",
+        llvm::cl::desc("Compute control dependencies on interprocedural CFG.\n"
+                       "Default: false (interprocedral CD are computed by\n"
+                       "a separate analysis.\n"),
                        llvm::cl::init(false), llvm::cl::cat(SlicingOpts));
 
     llvm::cl::opt<uint64_t> ptaFieldSensitivity("pta-field-sensitive",
@@ -165,7 +175,7 @@ SlicerOptions parseSlicerOptions(int argc, char *argv[], bool requireCrit, bool 
         llvm::cl::desc("Perform forward slicing\n"),
                        llvm::cl::init(false), llvm::cl::cat(SlicingOpts));
 
-    llvm::cl::opt<bool> threads("threads",
+    llvm::cl::opt<bool> threads("consider-threads",
         llvm::cl::desc("Consider threads are in input file (default=false)."),
         llvm::cl::init(false), llvm::cl::cat(SlicingOpts));
 
@@ -243,6 +253,11 @@ SlicerOptions parseSlicerOptions(int argc, char *argv[], bool requireCrit, bool 
         llvm::cl::aliasopt(cdAlgorithm),
         llvm::cl::cat(SlicingOpts));
 
+    llvm::cl::alias cdaInterprocAlias("cda-interproc",
+        llvm::cl::desc("Alias to interproc-cd"),
+        llvm::cl::aliasopt(interprocCd),
+        llvm::cl::cat(SlicingOpts));
+
     ////////////////////////////////////
     // ===-- End of the options --=== //
     ////////////////////////////////////
@@ -260,13 +275,22 @@ SlicerOptions parseSlicerOptions(int argc, char *argv[], bool requireCrit, bool 
 #endif
     llvm::cl::ParseCommandLineOptions(argc, argv);
 
+    if (requireCrit) {
+        if (slicingCriteria.getNumOccurrences() +
+            legacySlicingCriteria.getNumOccurrences() == 0) {
+            llvm::errs() << "No slicing criteria specified (-sc or -c option)\n";
+            std::exit(1);
+        }
+    }
+
     /// Fill the structure
     SlicerOptions options;
 
     options.inputFile = inputFile;
     options.outputFile = outputFile;
     options.slicingCriteria = slicingCriteria;
-    options.secondarySlicingCriteria = secondarySlicingCriteria;
+    options.legacySlicingCriteria = legacySlicingCriteria;
+    options.legacySecondarySlicingCriteria = legacySecondarySlicingCriteria;
     options.preservedFunctions = splitList(preservedFuns);
     options.removeSlicingCriteria = removeSlicingCriteria;
     options.forwardSlicing = forwardSlicing;
@@ -281,6 +305,7 @@ SlicerOptions parseSlicerOptions(int argc, char *argv[], bool requireCrit, bool 
 
     CDAOptions.algorithm = cdAlgorithm;
     CDAOptions.interprocedural = interprocCd;
+    CDAOptions._icfg = icfgCD;
     CDAOptions.setNodePerInstruction(cdaPerInstr);
 
     addAllocationFuns(dgOptions, allocationFuns);

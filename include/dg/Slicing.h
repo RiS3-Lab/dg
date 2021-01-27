@@ -29,7 +29,7 @@ public:
     WalkAndMark(bool forward_slc = false)
         : legacy::NodesWalk<NodeT, Queue>(
             forward_slc ?
-                (legacy::NODES_WALK_CD | legacy::NODES_WALK_DD |
+                (legacy::NODES_WALK_DD  | // legacy::NODES_WALK_CD  NOTE: we handle CD separately
                  legacy::NODES_WALK_USE | legacy::NODES_WALK_ID) :
                 (legacy::NODES_WALK_REV_CD | legacy::NODES_WALK_REV_DD |
                  legacy::NODES_WALK_USER | legacy::NODES_WALK_ID |
@@ -83,8 +83,27 @@ private:
         // the basic block - if there are basic blocks
         if (BBlock<NodeT> *B = n->getBBlock()) {
             B->setSlice(slice_id);
-            if (data->markedBlocks)
+            if (data->markedBlocks) {
                 data->markedBlocks->insert(B);
+            }
+
+            // if this node has CDs, enque them
+            if (data->analysis->isForward()) {
+                for (auto it = n->control_begin(), et = n->control_end();
+                        it != et; ++it) {
+                    data->analysis->enqueue(*it);
+                }
+
+                // if this node is a jump instruction,
+                // add also nodes that control depend on this jump
+                if (n == B->getLastNode()) {
+                    for (BBlock<NodeT> *CD : B->controlDependence()) {
+                        for (auto *cdnd : CD->getNodes()) {
+                            data->analysis->enqueue(cdnd);
+                        }
+                    }
+                }
+            }
         }
 #endif
 
@@ -190,24 +209,26 @@ public:
 
         ///
         // If we are performing forward slicing,
-        // we are missing the control dependencies now.
-        // So gather all control dependencies of the nodes that
-        // we want to have in the slice and perform normal backward
-        // slicing w.r.t these nodes.
+        // we must do the slice executable as we now just
+        // marked the nodes that are data dependent on the
+        // slicing criterion. We do that by using these
+        // nodes as slicing criteria in normal backward slicing.
         if (forward_slice) {
-            std::set<NodeT *> branchings;
+            std::set<NodeT *> inslice;
             for (auto *BB : wm.getMarkedBlocks()) {
 #if ENABLE_CFG
-               for (auto cBB : BB->revControlDependence()) {
-                   assert(cBB->successorsNum() > 1);
-                   branchings.insert(cBB->getLastNode());
-               }
+                for (auto *nd : BB->getNodes()) {
+                    if (nd->getSlice() == sl_id) {
+                        inslice.insert(nd);
+                    }
+                }
 #endif
             }
 
-            if (!branchings.empty()) {
+            // do backward slicing to make the slice executable
+            if (!inslice.empty()) {
                 WalkAndMark<NodeT> wm2;
-                wm2.mark(branchings, sl_id);
+                wm2.mark(inslice, sl_id);
             }
         }
 

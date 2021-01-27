@@ -1,7 +1,8 @@
-#ifndef _DG_TOOLS_LLVM_SLICER_OPTS_H_
-#define  _DG_TOOLS_LLVM_SLICER_OPTS_H_
+#ifndef DG_TOOLS_LLVM_SLICER_OPTS_H_
+#define DG_TOOLS_LLVM_SLICER_OPTS_H_
 
 #include <vector>
+#include <set>
 
 // ignore unused parameters in LLVM libraries
 #if (__clang__)
@@ -42,15 +43,30 @@ struct SlicerOptions {
     // do we perform forward slicing?
     bool forwardSlicing{false};
 
+    // string describing the slicing criteria
     std::string slicingCriteria{};
-    std::string secondarySlicingCriteria{};
+    // SC string in the old format
+    std::string legacySlicingCriteria{};
+    // legacy secondary SC
+    std::string legacySecondarySlicingCriteria{};
+
     std::string inputFile{};
     std::string outputFile{};
 };
 
 ///
 // Return filled SlicerOptions structure.
-SlicerOptions parseSlicerOptions(int argc, char *argv[], bool requireCrit = false, bool inputFileRequired = true);
+SlicerOptions
+parseSlicerOptions(int argc, char *argv[],
+                   bool requireCrit = false,
+                   bool inputFileRequired = true);
 
-#endif  // _DG_TOOLS_LLVM_SLICER_OPTS_H_
+bool getSlicingCriteriaNodes(dg::LLVMDependenceGraph& dg,
+                             const std::string& slicingCriteria,
+                             const std::string& legacySlicingCriteria,
+                             const std::string& legacySecondarySlicingCriteria,
+                             std::set<dg::LLVMNode *>& criteria_nodes,
+                             bool criteria_are_next_instr = false);
+
+#endif  // DG_TOOLS_LLVM_SLICER_OPTS_H_
 

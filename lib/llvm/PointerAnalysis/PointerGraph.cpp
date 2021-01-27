@@ -59,7 +59,7 @@ PSNode *LLVMPointerGraphBuilder::getConstant(const llvm::Value *val)
                     = llvm::dyn_cast<llvm::ConstantExpr>(val)) {
         return createConstantExpr(CE).getRepresentant();
     } else if (llvm::isa<llvm::Function>(val)) {
-        PSNode *ret = PS.create(PSNodeType::FUNCTION);
+        PSNode *ret = PS.create<PSNodeType::FUNCTION>();
         addNode(val, ret);
         return ret;
     } else if (llvm::isa<llvm::Constant>(val)) {
@@ -143,14 +143,13 @@ LLVMPointerGraphBuilder::getAndConnectSubgraph(const llvm::Function *F,
 LLVMPointerGraphBuilder::PSNodesSeq&
 LLVMPointerGraphBuilder::createCallToFunction(const llvm::CallInst *CInst,
                                               const llvm::Function *F) {
-    PSNodeCall *callNode = PSNodeCall::get(PS.create(PSNodeType::CALL));
-
+    PSNodeCall *callNode = PSNodeCall::get(PS.create<PSNodeType::CALL>());
     auto& subg = getAndConnectSubgraph(F, CInst, callNode);
 
     // the operands to the return node (which works as a phi node)
     // are going to be added when the subgraph is built
     PSNodeCallRet *returnNode
-        = PSNodeCallRet::get(PS.create(PSNodeType::CALL_RETURN, nullptr));
+        = PSNodeCallRet::get(PS.create<PSNodeType::CALL_RETURN>());
 
     returnNode->setPairedNode(callNode);
     callNode->setPairedNode(returnNode);
@@ -183,6 +182,24 @@ LLVMPointerGraphBuilder::insertFunctionCall(PSNode *callsite, PSNode *called) {
     const llvm::CallInst *CI = callsite->getUserData<llvm::CallInst>();
     const llvm::Function *F = called->getUserData<llvm::Function>();
 
+    if (F->isDeclaration()) {
+        /// memory allocation (malloc, calloc, etc.)
+        auto seq = createUndefFunctionCall(CI, F);
+        // we must manually set the data of representant,
+        // as we didn't call addNode
+        auto *repr = seq.getRepresentant();
+        repr->setUserData(const_cast<llvm::CallInst*>(CI));
+        // add internal successors
+        PSNodesSequenceAddSuccessors(seq);
+
+        callsite->addSuccessor(seq.getFirst());
+        auto *retval = callsite->getPairedNode();
+        seq.getLast()->addSuccessor(retval);
+
+        retval->addOperand(seq.getRepresentant());
+        return;
+    }
+
     PointerSubgraph& subg = getAndConnectSubgraph(F, CI, callsite);
 
     // remove the CFG edge and keep only the call edge
@@ -205,7 +222,7 @@ LLVMPointerGraphBuilder::getPointsToFunctions(const llvm::Value *calledValue)
         PSNode *node;
         auto iterator = nodes_map.find(calledValue);
         if (iterator == nodes_map.end()) {
-            node = PS.create(PSNodeType::FUNCTION);
+            node = PS.create<PSNodeType::FUNCTION>();
             addNode(calledValue, node);
             functions.push_back(node);
         } else {
@@ -411,6 +428,8 @@ LLVMPointerGraphBuilder::buildInstruction(const llvm::Instruction& Inst) {
             return createInsertElement(&Inst);
         case Instruction::ExtractElement:
             return createExtractElement(&Inst);
+        case Instruction::AtomicRMW:
+            return createAtomicRMW(&Inst);
         case Instruction::ShuffleVector:
             llvm::errs() << "ShuffleVector instruction is not supported, loosing precision\n";
             seq = &createUnknown(&Inst);
@@ -449,8 +468,7 @@ bool LLVMPointerGraphBuilder::isRelevantInstruction(const llvm::Instruction& Ins
 // create a formal argument
 LLVMPointerGraphBuilder::PSNodesSeq&
 LLVMPointerGraphBuilder::createArgument(const llvm::Argument *farg) {
-
-    PSNode *arg = PS.create(PSNodeType::PHI, nullptr);
+    PSNode *arg = PS.create<PSNodeType::PHI>();
     return addNode(farg, arg);
 }
 
@@ -554,7 +572,7 @@ LLVMPointerGraphBuilder::buildFunction(const llvm::Function& F)
     // create root and later (an unified) return nodes of this subgraph.
     // These are just for our convenience when building the graph,
     // they can be optimized away later since they are noops
-    PSNodeEntry *root = PSNodeEntry::get(PS.create(PSNodeType::ENTRY));
+    PSNodeEntry *root = PSNodeEntry::get(PS.create<PSNodeType::ENTRY>());
     assert(root);
     root->setFunctionName(F.getName().str());
 
@@ -562,7 +580,7 @@ LLVMPointerGraphBuilder::buildFunction(const llvm::Function& F)
     // then create the node for it
     PSNode *vararg = nullptr;
     if (F.isVarArg()) {
-        vararg = PS.create(PSNodeType::PHI, nullptr);
+        vararg = PS.create<PSNodeType::PHI>();
     }
 
     // add record to built graphs here, so that subsequent call of this function

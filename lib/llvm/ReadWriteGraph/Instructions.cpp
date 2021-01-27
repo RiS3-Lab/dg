@@ -143,14 +143,73 @@ RWNode *LLVMReadWriteGraphBuilder::createRealloc(const llvm::Instruction *Inst) 
 
     if (buildUses) {
         // realloc copies the memory
-        auto defSites = mapPointers(Inst, Inst->getOperand(0), size);
-        for (const auto& ds : defSites) {
-            node.addUse(ds);
-        }
+        // NOTE: do not use mapPointers, it could lead to infinite
+        // recursion as realloc may use itself and the 'node' is not
+        // in the map yet
+        addReallocUses(Inst, node, size);
     }
-
     return &node;
 }
+
+void LLVMReadWriteGraphBuilder::addReallocUses(const llvm::Instruction *Inst,
+                                               RWNode& node,
+                                               uint64_t size) {
+    auto psn = PTA->getLLVMPointsToChecked(Inst->getOperand(0));
+    if (!psn.first) {
+#ifndef NDEBUG
+        llvm::errs() << "[RWG] warning at: " << ValInfo(Inst) << "\n";
+        llvm::errs() << "No points-to set for: "
+                     << ValInfo(Inst->getOperand(0)) << "\n";
+#endif
+        node.addUse(UNKNOWN_MEMORY);
+        return;
+    }
+
+    if (psn.second.empty()) {
+#ifndef NDEBUG
+        llvm::errs() << "[RWG] warning at: " << ValInfo(Inst) << "\n";
+        llvm::errs() << "Empty points-to set for: "
+                     << ValInfo(Inst->getOperand(0)) << "\n";
+#endif
+        node.addUse(UNKNOWN_MEMORY);
+        return;
+    }
+
+    if (psn.second.hasUnknown()) {
+        node.addUse(UNKNOWN_MEMORY);
+    }
+
+    for (const auto& ptr: psn.second) {
+        // realloc may be only from other dynamic allocation
+        if (!llvm::isa<llvm::CallInst>(ptr.value))
+            continue;
+
+        //llvm::errs() << "Realloc ptr: " << *ptr.value << "\n";
+        RWNode *ptrNode = nullptr;
+        if (ptr.value == Inst) {
+            // the realloc reallocates itself
+            ptrNode = &node;
+        } else {
+            ptrNode = getOperand(ptr.value);
+        }
+        if (!ptrNode) {
+            static std::set<const llvm::Value *> warned;
+            if (warned.insert(ptr.value).second) {
+                llvm::errs() << "[RWG] error at "  << ValInfo(Inst) << "\n";
+                llvm::errs() << "[RWG] error for "
+                             << ValInfo(Inst->getOperand(0)) << "\n";
+                llvm::errs() << "[RWG] error: Cannot find node for "
+                             << ValInfo(ptr.value) << "\n";
+            }
+            continue;
+        }
+
+        node.addUse(ptrNode, ptr.offset,
+                    ptr.offset.isUnknown() ?  Offset::UNKNOWN : size);
+    }
+}
+
+
 
 RWNode *LLVMReadWriteGraphBuilder::createReturn(const llvm::Instruction *) {
     return &create(RWNodeType::RETURN);
@@ -200,6 +259,42 @@ RWNode *LLVMReadWriteGraphBuilder::createLoad(const llvm::Instruction *Inst) {
 
     return &node;
 }
+
+RWNode *LLVMReadWriteGraphBuilder::createAtomicRMW(const llvm::Instruction *Inst) {
+    auto *RMW = llvm::cast<llvm::AtomicRMWInst>(Inst);
+    RWNode& node = create(RWNodeType::STORE);
+
+    uint64_t size = llvmutils::getAllocatedSize(RMW->getValOperand()->getType(),
+                                                getDataLayout());
+    if (size == 0)
+        size = Offset::UNKNOWN;
+
+    auto defSites = mapPointers(RMW, RMW->getPointerOperand(), size);
+
+    // strong update is possible only with must aliases that point
+    // to the last instance of the memory object. Since detecting that
+    // is not that easy, do strong updates only on must aliases
+    // of local and global variables (and, of course, we must know the offsets)
+    // FIXME: ALLOCAs in recursive procedures can also yield only weak update
+    bool strong_update = false;
+    if (defSites.size() == 1) {
+        const auto& ds = *(defSites.begin());
+        strong_update = (ds.target->isAlloc() || ds.target->isGlobal()) &&
+                        !ds.offset.isUnknown() && !ds.len.isUnknown();
+    }
+
+    for (const auto& ds : defSites) {
+        node.addDef(ds, strong_update);
+    }
+
+    // RMW is also use
+    for (const auto& ds : defSites) {
+        node.addUse(ds);
+    }
+
+    return &node;
+}
+
 
 NodesSeq<RWNode>
 LLVMReadWriteGraphBuilder::createCall(const llvm::Instruction *Inst) {
@@ -305,6 +400,8 @@ NodesSeq<RWNode> LLVMReadWriteGraphBuilder::createNode(const llvm::Value *v) {
              return {createAlloc(I)};
          case Instruction::Store:
              return {createStore(I)};
+         case Instruction::AtomicRMW:
+             return {createAtomicRMW(I)};
          case Instruction::Load:
              if (buildUses) {
                  return {createLoad(I)};

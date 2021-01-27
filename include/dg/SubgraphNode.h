@@ -20,8 +20,13 @@ namespace dda {class RWNode; }
 
 template <typename NodeT>
 class SubgraphNode {
+public:
+    using IDType = unsigned;
+    using NodesVec = std::vector<NodeT *>;
+
+private:
     // id of the node. Every node from a graph has a unique ID;
-    unsigned int id = 0;
+    IDType id = 0;
 
     // data that can an analysis store in node
     // for its own needs
@@ -39,9 +44,6 @@ class SubgraphNode {
     // id of scc component
     unsigned int scc_id{0};
 
-public:
-    using NodesVec = std::vector<NodeT *>;
-
 protected:
     // XXX: make those private!
     NodesVec _successors;
@@ -56,7 +58,7 @@ protected:
 
 public:
 
-    SubgraphNode(unsigned id) : id(id) {}
+    SubgraphNode(IDType id) : id(id) {}
 #ifndef NDEBUG
     // in debug mode, we have virtual dump methods
     // and then we want virtual dtor. Otherwise,
@@ -65,7 +67,7 @@ public:
     virtual ~SubgraphNode() = default;
 #endif
 
-    unsigned int getID() const { return id; }
+    IDType getID() const { return id; }
 
     void setSize(size_t s) { size = s; }
     size_t getSize() const { return size; }
@@ -123,7 +125,20 @@ public:
         operands.clear();
     }
 
-    size_t addOperand(NodeT *n) {
+public:
+    template<typename NodePtr, typename... Args>
+    size_t addOperand(NodePtr node, Args&&... args) {
+        addOperand(node);
+        return addOperand(std::forward<Args>(args)...);
+    }
+
+    template<typename NodePtr,
+             typename Node_plain = typename std::remove_pointer<NodePtr>::type>
+    size_t addOperand(NodePtr n) {
+        static_assert(std::is_pointer<NodePtr>::value &&
+                      std::is_base_of<NodeT, Node_plain>::value,
+                      "Argument is not a pointer or is not derived from this "
+                      "class.");
         assert(n && "Passed nullptr as the operand");
         operands.push_back(n);
         n->addUser(static_cast<NodeT *>(this));
@@ -310,7 +325,7 @@ public:
         _predecessors.clear();
     }
 
-    void replaceAllUsesWith(NodeT *nd, bool removeDupl = false) {
+    void replaceAllUsesWith(NodeT *nd, bool removeDupl = true) {
         assert(nd != this && "Replacing uses of 'this' with 'this'");
 
         // Replace 'this' in every user with 'nd'.

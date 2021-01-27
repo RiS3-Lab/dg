@@ -86,34 +86,16 @@ public:
     }
 
     // FIXME: remember just that a node is on loop, not the whole loops
-    void computeLoops() {
-        assert(root);
-        assert(!computedLoops() && "computeLoops() called repeatedly");
-        _computed_loops = true;
-
-        DBG(pta, "Computing information about loops");
-
-        // compute the strongly connected components
-        auto SCCs = SCC<PSNode>().compute(root);
-        for (auto& scc : SCCs) {
-            if (scc.size() < 1)
-                continue;
-            // self-loop is also loop
-            if (scc.size() == 1 &&
-                scc[0]->getSingleSuccessorOrNull() != scc[0])
-                continue;
-
-            _loops.push_back(std::move(scc));
-            assert(scc.empty() && "We wanted to move the scc");
-
-            for (auto nd : _loops.back()) {
-                assert(_node_to_loop.find(nd) == _node_to_loop.end());
-                _node_to_loop[nd] = _loops.size() - 1;
-            }
-        }
-    }
+    void computeLoops();
 };
 
+// IDs of special nodes
+enum PointerGraphReservedIDs {
+    ID_UNKNOWN = 1,
+    ID_NULL = 2,
+    ID_INVALIDATED = 3,
+    LAST_RESERVED_ID = 3
+};
 
 ///
 // Basic graph for pointer analysis
@@ -123,93 +105,82 @@ class PointerGraph
     unsigned int dfsnum{0};
 
     // root of the pointer state subgraph
-    // FIXME: this should be PointerSubgraph, not PSNode...
     PointerSubgraph *_entry{nullptr};
 
     using NodesT = std::vector<std::unique_ptr<PSNode>>;
+    using GlobalNodesT = std::vector<PSNode *>;
     using SubgraphsT = std::vector<std::unique_ptr<PointerSubgraph>>;
 
     NodesT nodes;
     SubgraphsT _subgraphs;
 
     // Take care of assigning ids to new nodes
-    unsigned int last_node_id = 0;
-    unsigned int getNewNodeId() {
-        return ++last_node_id;
-    }
+    unsigned int last_node_id = PointerGraphReservedIDs::LAST_RESERVED_ID;
+    unsigned int getNewNodeId() { return ++last_node_id; }
 
     GenericCallGraph<PSNode *> callGraph;
+    GlobalNodesT _globals;
 
-    void initStaticNodes() {
-        NULLPTR->pointsTo.clear();
-        UNKNOWN_MEMORY->pointsTo.clear();
-        NULLPTR->pointsTo.add(Pointer(NULLPTR, 0));
-        UNKNOWN_MEMORY->pointsTo.add(Pointer(UNKNOWN_MEMORY, Offset::UNKNOWN));
+    // check for correct count of variadic arguments
+    template<PSNodeType type, size_t actual_size>
+    constexpr static ssize_t expected_args_size() {
+        // C++14 TODO: replace this atrocity with a switch
+        return type == PSNodeType::NOOP ||
+               type == PSNodeType::ENTRY ||
+               type == PSNodeType::FUNCTION ||
+               type == PSNodeType::FORK ||
+               type == PSNodeType::JOIN ? 0 :
+               type == PSNodeType::CAST ||
+               type == PSNodeType::LOAD ||
+               type == PSNodeType::INVALIDATE_OBJECT ||
+               type == PSNodeType::INVALIDATE_LOCALS ||
+               type == PSNodeType::FREE ? 1 :
+               type == PSNodeType::STORE ||
+               type == PSNodeType::CONSTANT ? 2 :
+               type == PSNodeType::CALL ||
+               type == PSNodeType::CALL_FUNCPTR ||
+               type == PSNodeType::CALL_RETURN ||
+               type == PSNodeType::PHI ||
+               type == PSNodeType::RETURN ? actual_size : -1;
     }
 
-    NodesT _globals;
+    // C++17 TODO:
+    //   * replace the two definitions of nodeFactory with one using
+    //     `if constexpr (needs_type)`
+    //   * replace GetNodeType with a chain of `if constexpr` expressions
+    template<PSNodeType Type, typename... Args,
+             typename Node = typename GetNodeType<Type>::type>
+    typename std::enable_if<!std::is_same<Node, PSNode>::value, Node*>::type
+    nodeFactory(Args&&... args) {
+        return new Node(getNewNodeId(), std::forward<Args>(args)...);
+    }
 
-    PSNode *_create(PSNodeType t, va_list args) {
-        PSNode *node = nullptr;
-
-        switch (t) {
-            case PSNodeType::ALLOC:
-                node = new PSNodeAlloc(getNewNodeId());
-                break;
-            case PSNodeType::GEP:
-                node = new PSNodeGep(getNewNodeId(),
-                                     va_arg(args, PSNode *),
-                                     va_arg(args, Offset::type));
-                break;
-            case PSNodeType::MEMCPY:
-                node = new PSNodeMemcpy(getNewNodeId(),
-                                        va_arg(args, PSNode *),
-                                        va_arg(args, PSNode *),
-                                        va_arg(args, Offset::type));
-                break;
-            case PSNodeType::CONSTANT:
-                node = new PSNode(getNewNodeId(), PSNodeType::CONSTANT,
-                                  va_arg(args, PSNode *),
-                                  va_arg(args, Offset::type));
-                break;
-            case PSNodeType::ENTRY:
-                node = new PSNodeEntry(getNewNodeId());
-                break;
-            case PSNodeType::CALL:
-                node = new PSNodeCall(t, getNewNodeId());
-                break;
-            case PSNodeType::CALL_FUNCPTR:
-                node = new PSNodeCall(t, getNewNodeId());
-                node->addOperand(va_arg(args, PSNode *));
-                break;
-            case PSNodeType::FORK:
-                node = new PSNodeFork(getNewNodeId());
-                node->addOperand(va_arg(args, PSNode *));
-                break;
-            case PSNodeType::JOIN:
-                node = new PSNodeJoin(getNewNodeId());
-                break;
-            case PSNodeType::RETURN:
-                node = new PSNodeRet(getNewNodeId(), args);
-                break;
-            case PSNodeType::CALL_RETURN:
-                node = new PSNodeCallRet(getNewNodeId(), args);
-                break;
-            default:
-                node = new PSNode(getNewNodeId(), t, args);
-                break;
-        }
-
-        assert(node && "Didn't created node");
-        return node;
+    // we need to check that the number of arguments is correct with general
+    // PSNode
+    template<PSNodeType Type, typename... Args,
+             typename Node = typename GetNodeType<Type>::type>
+    typename std::enable_if<std::is_same<Node, PSNode>::value, Node*>::type
+    nodeFactory(Args&&... args) {
+        static_assert(
+                expected_args_size<Type, sizeof...(args)>() == sizeof...(args),
+                "Incorrect number of arguments");
+        return new Node(getNewNodeId(), Type, std::forward<Args>(args)...);
     }
 
 public:
     PointerGraph() {
         // nodes[0] represents invalid node (the node with id 0)
         nodes.emplace_back(nullptr);
+        // the first several nodes are special nodes. For now, we just replace
+        // them with nullptr, as those are created statically <-- FIXME!
+        nodes.emplace_back(nullptr);
+        nodes.emplace_back(nullptr);
+        nodes.emplace_back(nullptr);
+        assert(nodes.size() - 1 == PointerGraphReservedIDs::LAST_RESERVED_ID);
         initStaticNodes();
     }
+
+    void initStaticNodes();
 
     PointerSubgraph *createSubgraph(PSNode *root,
                                     PSNode *vararg = nullptr) {
@@ -220,14 +191,11 @@ public:
         return _subgraphs.back().get();
     }
 
-    PSNode *create(PSNodeType t, ...) {
-        va_list args;
-
-        va_start(args, t);
-        PSNode *n = _create(t, args);
-        va_end(args);
-
-        nodes.emplace_back(n);
+    template<PSNodeType Type, typename... Args>
+    PSNode *create(Args&&... args) {
+        PSNode *n = nodeFactory<Type>(std::forward<Args>(args)...);
+        nodes.emplace_back(n); // C++17 returns a referece
+        assert(n->getID() == nodes.size() - 1);
         return n;
     }
 
@@ -235,14 +203,11 @@ public:
     // in the same order in which they are created.
     // The global nodes are processed only once before the
     // analysis starts.
-    PSNode *createGlobal(PSNodeType t, ...) {
-        va_list args;
-
-        va_start(args, t);
-        PSNode *n = _create(t, args);
-        va_end(args);
-
-        _globals.emplace_back(n);
+    template<PSNodeType Type,  typename... Args>
+    PSNode *createGlobal(Args&&... args) {
+        PSNode *n = create<Type>(std::forward<Args>(args)...);
+        _globals.push_back(n); // C++17 returns a referece
+        assert(n->getID() == nodes.size() - 1);
         return n;
     }
 
@@ -255,17 +220,10 @@ public:
     const SubgraphsT& getSubgraphs() const { return _subgraphs; }
 
     const NodesT& getNodes() const { return nodes; }
-    const NodesT& getGlobals() const { return _globals; }
+    const GlobalNodesT& getGlobals() const { return _globals; }
     size_t size() const { return nodes.size() + _globals.size(); }
 
-    void computeLoops() {
-        DBG(pta, "Computing information about loops for the whole graph");
-
-        for (auto& it : _subgraphs) {
-            if (!it->computedLoops())
-                it->computeLoops();
-        }
-    }
+    void computeLoops();
 
     PointerGraph(PointerGraph&&) = default;
     PointerGraph& operator=(PointerGraph&&) = default;
@@ -273,37 +231,9 @@ public:
     PointerGraph operator=(const PointerGraph&) = delete;
 
     PointerSubgraph *getEntry() const { return _entry; }
-    void setEntry(PointerSubgraph *e) {
-#if DEBUG_ENABLED
-        bool found = false;
-        for (auto& n : _subgraphs) {
-            if (n.get() == e) {
-                found = true;
-                break;
-            }
-        }
-        assert(found && "The entry is not a subgraph of the graph");
-#endif
-        _entry = e;
-    }
+    void setEntry(PointerSubgraph *e);
 
-    void remove(PSNode *nd) {
-        assert(nd && "nullptr passed as nd");
-        // the node must be isolated
-        assert(nd->successors().empty() && "The node is still in graph");
-        assert(nd->predecessors().empty() && "The node is still in graph");
-        assert(nd->getID() < size() && "Invalid ID");
-        assert(nd->getID() > 0 && "Invalid ID");
-        assert(nd->users.empty() && "This node is used by other nodes");
-        // if the node has operands, it means that the operands
-        // have a reference (an user edge to this node).
-        // We do not want to create dangling references.
-        assert(nd->operands.empty() && "This node uses other nodes");
-        assert(nodes[nd->getID()].get() == nd && "Inconsistency in nodes");
-
-        // clear the nodes entry
-        nodes[nd->getID()].reset();
-    }
+    void remove(PSNode *nd);
 
     // get nodes in BFS order and store them into
     // the container

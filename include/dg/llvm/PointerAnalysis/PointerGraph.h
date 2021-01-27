@@ -219,9 +219,9 @@ public:
 
     PSNodeFork *createForkNode(const llvm::CallInst *CInst, PSNode *);
     PSNodeJoin *createJoinNode(const llvm::CallInst *CInst, PSNode *);
-    PSNodesSeq& createPthreadCreate(const llvm::CallInst *CInst);
-    PSNodesSeq& createPthreadJoin(const llvm::CallInst *CInst);
-    PSNodesSeq& createPthreadExit(const llvm::CallInst *CInst);
+    PSNodesSeq createPthreadCreate(const llvm::CallInst *CInst);
+    PSNodesSeq createPthreadJoin(const llvm::CallInst *CInst);
+    PSNodesSeq createPthreadExit(const llvm::CallInst *CInst);
 
     bool addFunctionToFork(PSNode * function,
                            PSNodeFork *forkNode);
@@ -321,8 +321,8 @@ private:
     bool isRelevantInstruction(const llvm::Instruction& Inst);
 
     PSNodesSeq& createAlloc(const llvm::Instruction *Inst);
-    PSNodesSeq& createDynamicAlloc(const llvm::CallInst *CInst,
-                                   AllocationFunction type);
+    PSNode *createDynamicAlloc(const llvm::CallInst *CInst,
+                               AllocationFunction type);
     PSNodesSeq& createStore(const llvm::Instruction *Inst);
     PSNodesSeq& createLoad(const llvm::Instruction *Inst);
     PSNodesSeq& createGEP(const llvm::Instruction *Inst);
@@ -335,8 +335,10 @@ private:
     PSNodesSeq& createAsm(const llvm::Instruction *Inst);
     PSNodesSeq& createInsertElement(const llvm::Instruction *Inst);
     PSNodesSeq& createExtractElement(const llvm::Instruction *Inst);
+    PSNodesSeq& createAtomicRMW(const llvm::Instruction *Inst);
     PSNodesSeq& createConstantExpr(const llvm::ConstantExpr *CE);
 
+    PSNode* createInternalLoad(const llvm::Instruction *Inst);
     PSNodesSeq& createIrrelevantInst(const llvm::Value *,
                                      bool build_uses = false);
     PSNodesSeq& createArgument(const llvm::Argument *);
@@ -345,8 +347,8 @@ private:
     PSNodesSeq& createAdd(const llvm::Instruction *Inst);
     PSNodesSeq& createArithmetic(const llvm::Instruction *Inst);
     PSNodesSeq& createUnknown(const llvm::Value *val);
-    PSNodesSeq& createLifetimeEnd(const llvm::Instruction *Inst);
-    PSNodesSeq& createFree(const llvm::Instruction *Inst);
+    PSNode *createFree(const llvm::Instruction *Inst);
+    PSNode *createLifetimeEnd(const llvm::Instruction *Inst);
 
     PSNode *getOperand(const llvm::Value *val);
     PSNode *tryGetOperand(const llvm::Value *val);
@@ -389,6 +391,7 @@ private:
     PSNodesSeq& createExtract(const llvm::Instruction *Inst);
     PSNodesSeq& createCall(const llvm::Instruction *Inst);
     PSNodesSeq& createFunctionCall(const llvm::CallInst *, const llvm::Function *);
+    PSNodesSeq createUndefFunctionCall(const llvm::CallInst *, const llvm::Function *);
     PSNodesSeq& createFuncptrCall(const llvm::CallInst *, const llvm::Value *);
 
     PointerSubgraph& createOrGetSubgraph(const llvm::Function *);
@@ -400,14 +403,14 @@ private:
                                          PSNodeAlloc *node,
                                          uint64_t offset = 0);
 
-    PSNodesSeq& createMemTransfer(const llvm::IntrinsicInst *Inst);
-    PSNodesSeq& createMemSet(const llvm::Instruction *);
-    PSNodesSeq& createDynamicMemAlloc(const llvm::CallInst *CInst,
+    PSNode *createMemTransfer(const llvm::IntrinsicInst *Inst);
+    PSNodesSeq createMemSet(const llvm::Instruction *);
+    PSNodesSeq createDynamicMemAlloc(const llvm::CallInst *CInst,
                                      AllocationFunction type);
-    PSNodesSeq& createRealloc(const llvm::CallInst *CInst);
-    PSNodesSeq& createUnknownCall(const llvm::CallInst *CInst);
-    PSNodesSeq& createIntrinsic(const llvm::Instruction *Inst);
-    PSNodesSeq& createVarArg(const llvm::IntrinsicInst *Inst);
+    PSNodesSeq createRealloc(const llvm::CallInst *CInst);
+    PSNode* createUnknownCall();
+    PSNodesSeq createIntrinsic(const llvm::Instruction *Inst);
+    PSNodesSeq createVarArg(const llvm::IntrinsicInst *Inst);
 };
 
 /// --------------------------------------------------------
